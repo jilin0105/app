@@ -86,37 +86,44 @@ var (
 	dataDir       string
 )
 
-// ----------------------- 入口函数 (适配 Gomobile + 完整功能) -----------------------
+// ----------------------- 入口函数 (适配 Android 16) -----------------------
 
 func main() {
 	app.Main(func(a app.App) {
-		// 在后台协程中启动你的所有业务逻辑
-		go func() {
-			port := 8080
-			defaultSpeedURL := "https://speed.cloudflare.com/__down?bytes=100000000"
-
-			// Android 环境路径适配
-			if os.Getenv("FILESDIR") != "" {
-				dataDir = os.Getenv("FILESDIR")
-			}
-
-			fmt.Printf("服务启动中...\n")
-			if err := StartServer(port, defaultSpeedURL); err != nil {
-				fmt.Printf("服务错误: %v\n", err)
-			}
-		}()
-
-		// 监听系统事件，确保 App 不被系统立即回收
+		var once sync.Once
 		for e := range a.Events() {
 			switch e := a.Filter(e).(type) {
 			case lifecycle.Event:
-				fmt.Printf("App 生命周期状态: %v\n", e.To)
+				// 当 App 进入可见阶段时启动服务
+				if e.Crosses(lifecycle.StageVisible) == lifecycle.CrossOn {
+					once.Do(func() {
+						go func() {
+							// 针对 Android 16 的路径安全处理
+							filesDir := os.Getenv("FILESDIR")
+							if filesDir != "" {
+								dataDir = filesDir
+							} else {
+								// 兜底方案：使用临时目录，确保不闪退
+								dataDir = os.TempDir()
+							}
+
+							port := 8080
+							defaultURL := "https://speed.cloudflare.com/__down?bytes=100000000"
+							
+							fmt.Printf("服务在后台启动中，尝试端口 %d...\n", port)
+							if err := StartServer(port, defaultURL); err != nil {
+								// 如果 8080 被占用，尝试随机端口
+								_ = StartServer(0, defaultURL)
+							}
+						}()
+					})
+				}
 			}
 		}
 	})
 }
 
-// ----------------------- 核心函数 -----------------------
+// ----------------------- 核心业务函数 -----------------------
 
 func SetSpeedTestURL(u string) {
 	speedTestURL = u
@@ -469,7 +476,6 @@ func runSpeedTest(ws *websocket.Conn, ip string, port int) {
 		Timeout: 15 * time.Second,
 	}
 
-	// 这里使用了修复后的变量 parsed
 	resp, err := client.Get(parsed.String())
 	if err != nil {
 		sendWSMessage(ws, "speed_test_result", map[string]string{"ip": ip, "speed": "连接错误"})
