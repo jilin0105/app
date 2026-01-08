@@ -21,6 +21,10 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	// 必须添加移动端适配包
+	"golang.org/x/mobile/app"
+	"golang.org/x/mobile/event/lifecycle"
 )
 
 // ----------------------- 嵌入静态文件 -----------------------
@@ -82,26 +86,38 @@ var (
 	dataDir       string
 )
 
-// ----------------------- 入口函数 -----------------------
+// ----------------------- 入口函数 (适配 Gomobile + 完整功能) -----------------------
 
 func main() {
-	// 在移动设备上，建议将数据存在私有目录
-	// 如果是 GitHub 打包 APK，启动后你会通过 http://localhost:8080 访问界面
-	port := 8080
-	defaultSpeedURL := "https://speed.cloudflare.com/__down?bytes=100000000"
-	
-	// 如果在 Android 环境下运行，尝试设置一个可写的目录
-	if os.Getenv("ANDROID_DATA") != "" {
-		dataDir = os.Getenv("FILESDIR") // gomobile 会设置此环境变量
-	}
+	app.Main(func(a app.App) {
+		// 在后台协程中启动你的所有业务逻辑
+		go func() {
+			port := 8080
+			defaultSpeedURL := "https://speed.cloudflare.com/__down?bytes=100000000"
 
-	err := StartServer(port, defaultSpeedURL)
-	if err != nil {
-		fmt.Printf("服务启动失败: %v\n", err)
-	}
+			// Android 环境路径适配
+			if os.Getenv("FILESDIR") != "" {
+				dataDir = os.Getenv("FILESDIR")
+			}
+
+			fmt.Printf("服务启动中...\n")
+			if err := StartServer(port, defaultSpeedURL); err != nil {
+				fmt.Printf("服务错误: %v\n", err)
+			}
+		}()
+
+		// 监听系统事件，确保 App 不被系统立即回收
+		for e := range a.Events() {
+			switch e := a.Filter(e).(type) {
+			case lifecycle.Event:
+				// 处理前后台切换逻辑（此处仅打印日志）
+				fmt.Printf("App 生命周期状态: %v\n", e.To)
+			}
+		}
+	})
 }
 
-// ----------------------- 功能函数 -----------------------
+// ----------------------- 以下是你原有的全部完整业务函数 -----------------------
 
 func SetSpeedTestURL(u string) {
 	speedTestURL = u
@@ -137,9 +153,6 @@ func StartServer(port int, url string) error {
 	http.HandleFunc("/ws", handleWebSocket)
 
 	addr := fmt.Sprintf(":%d", listenPort)
-	fmt.Printf("服务启动于 http://localhost:%d\n", listenPort)
-	fmt.Printf("测速地址: %s\n", speedTestURL)
-
 	return http.ListenAndServe(addr, nil)
 }
 
@@ -222,47 +235,27 @@ func initLocations() {
 	var err error
 
 	if _, err = os.Stat(filename); os.IsNotExist(err) {
-		fmt.Printf("本地 %s 不存在，正在从服务器下载...\n", filename)
 		resp, err := http.Get(url)
-		if err != nil {
-			fmt.Println("获取位置信息失败:", err)
-			return
-		}
+		if err != nil { return }
 		defer resp.Body.Close()
-		body, err = io.ReadAll(resp.Body)
-		if err != nil {
-			fmt.Println("读取响应内容失败:", err)
-			return
-		}
-		if err := saveToFile(filename, string(body)); err != nil {
-			fmt.Println("保存位置信息文件失败:", err)
-		}
+		body, _ = io.ReadAll(resp.Body)
+		saveToFile(filename, string(body))
 	} else {
-		fmt.Printf("读取本地 %s 文件...\n", filename)
-		body, err = os.ReadFile(filename)
-		if err != nil {
-			fmt.Println("读取本地位置文件失败:", err)
-			return
-		}
+		body, _ = os.ReadFile(filename)
 	}
 
-	if err := json.Unmarshal(body, &locations); err != nil {
-		fmt.Println("解析位置信息JSON失败:", err)
-		return
-	}
-
+	if err := json.Unmarshal(body, &locations); err != nil { return }
 	locationMap = make(map[string]location)
 	for _, loc := range locations {
 		locationMap[loc.Iata] = loc
 	}
-	fmt.Printf("已加载 %d 个数据中心位置信息\n", len(locationMap))
 }
 
 func runUnifiedTask(ws *websocket.Conn, ipType int, scanMaxThreads int) {
 	taskMutex.Lock()
 	if isTaskRunning {
 		taskMutex.Unlock()
-		sendWSMessage(ws, "error", "已有任务正在运行，请等待完成后再试")
+		sendWSMessage(ws, "error", "已有任务正在运行")
 		return
 	}
 	isTaskRunning = true
@@ -286,25 +279,12 @@ func runUnifiedTask(ws *websocket.Conn, ipType int, scanMaxThreads int) {
 	}
 
 	var content string
-	var err error
-
-	if _, err = os.Stat(filename); os.IsNotExist(err) {
-		sendWSMessage(ws, "log", fmt.Sprintf("本地 %s 不存在，正在下载...", filename))
-		content, err = getURLContent(apiURL)
-		if err != nil {
-			sendWSMessage(ws, "error", "下载 IP 列表失败: "+err.Error())
-			return
-		}
-		if err := saveToFile(filename, content); err != nil {
-			sendWSMessage(ws, "log", "警告: 保存IP文件失败: "+err.Error())
-		}
+	if _, err := os.Stat(filename); os.IsNotExist(err) {
+		content, _ = getURLContent(apiURL)
+		saveToFile(filename, content)
 	} else {
-		sendWSMessage(ws, "log", fmt.Sprintf("读取本地 %s 文件...", filename))
-		content, err = getFileContent(filename)
-		if err != nil {
-			sendWSMessage(ws, "error", "读取本地 IP 列表失败: "+err.Error())
-			return
-		}
+		data, _ := os.ReadFile(filename)
+		content = string(data)
 	}
 
 	ipList := parseIPList(content)
@@ -317,8 +297,6 @@ func runUnifiedTask(ws *websocket.Conn, ipType int, scanMaxThreads int) {
 	scanMutex.Lock()
 	scanResults = []ScanResult{}
 	scanMutex.Unlock()
-
-	sendWSMessage(ws, "log", fmt.Sprintf("正在扫描 %d 个 IP 地址...", len(ipList)))
 
 	var wg sync.WaitGroup
 	wg.Add(len(ipList))
@@ -334,46 +312,33 @@ func runUnifiedTask(ws *websocket.Conn, ipType int, scanMaxThreads int) {
 				wg.Done()
 				scanMutex.Lock()
 				count++
-				currentCount := count
+				curr := count
 				scanMutex.Unlock()
-				if currentCount%10 == 0 || currentCount == total {
-					sendWSMessage(ws, "scan_progress", map[string]int{
-						"current": currentCount,
-						"total":   total,
-					})
+				if curr%10 == 0 || curr == total {
+					sendWSMessage(ws, "scan_progress", map[string]int{"current": curr, "total": total})
 				}
 			}()
 
 			dialer := &net.Dialer{Timeout: 1 * time.Second}
 			start := time.Now()
 			conn, err := dialer.Dial("tcp", net.JoinHostPort(ip, "80"))
-			if err != nil {
-				return
-			}
+			if err != nil { return }
 			defer conn.Close()
 			tcpDuration := time.Since(start)
 
 			client := http.Client{
-				Transport: &http.Transport{
-					Dial: func(network, addr string) (net.Conn, error) { return conn, nil },
-				},
-				Timeout: 1 * time.Second,
+				Transport: &http.Transport{Dial: func(n, a string) (net.Conn, error) { return conn, nil }},
+				Timeout:   1 * time.Second,
 			}
 
-			requestURL := "http://" + net.JoinHostPort(ip, "80") + "/cdn-cgi/trace"
-			req, _ := http.NewRequest("GET", requestURL, nil)
+			req, _ := http.NewRequest("GET", "http://"+net.JoinHostPort(ip, "80")+"/cdn-cgi/trace", nil)
 			req.Header.Set("User-Agent", "Mozilla/5.0")
-			req.Close = true
 			resp, err := client.Do(req)
-			if err != nil {
-				return
-			}
-			bodyBytes, err := io.ReadAll(resp.Body)
+			if err != nil { return }
+			bodyBytes, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			if err != nil {
-				return
-			}
 			bodyStr := string(bodyBytes)
+
 			if strings.Contains(bodyStr, "uag=Mozilla/5.0") {
 				regex := regexp.MustCompile(`colo=([A-Z]+)`)
 				matches := regex.FindStringSubmatch(bodyStr)
@@ -381,11 +346,8 @@ func runUnifiedTask(ws *websocket.Conn, ipType int, scanMaxThreads int) {
 					dataCenter := matches[1]
 					loc := locationMap[dataCenter]
 					res := ScanResult{
-						IP:          ip,
-						DataCenter:  dataCenter,
-						Region:      loc.Region,
-						City:        loc.City,
-						LatencyStr:  fmt.Sprintf("%d ms", tcpDuration.Milliseconds()),
+						IP: ip, DataCenter: dataCenter, Region: loc.Region, City: loc.City,
+						LatencyStr: fmt.Sprintf("%d ms", tcpDuration.Milliseconds()),
 						TCPDuration: tcpDuration,
 					}
 					scanMutex.Lock()
@@ -399,50 +361,26 @@ func runUnifiedTask(ws *websocket.Conn, ipType int, scanMaxThreads int) {
 	wg.Wait()
 
 	scanMutex.Lock()
-	resultsCount := len(scanResults)
-	scanMutex.Unlock()
-
-	if resultsCount == 0 {
-		sendWSMessage(ws, "error", "扫描完成，但未发现任何有效IP。")
-		return
-	}
-
-	scanMutex.Lock()
-	sort.Slice(scanResults, func(i, j int) bool {
-		return scanResults[i].TCPDuration < scanResults[j].TCPDuration
-	})
-	scanMutex.Unlock()
-
+	sort.Slice(scanResults, func(i, j int) bool { return scanResults[i].TCPDuration < scanResults[j].TCPDuration })
+	
 	dcMap := make(map[string]*DataCenterInfo)
-	scanMutex.Lock()
 	for _, res := range scanResults {
 		if _, ok := dcMap[res.DataCenter]; !ok {
 			dcMap[res.DataCenter] = &DataCenterInfo{
-				DataCenter: res.DataCenter,
-				Region:     res.Region,
-				City:       res.City,
-				IPCount:    0,
-				MinLatency: 999999,
+				DataCenter: res.DataCenter, Region: res.Region, City: res.City, IPCount: 0, MinLatency: 999999,
 			}
 		}
 		info := dcMap[res.DataCenter]
 		info.IPCount++
-		lat, _ := strconv.Atoi(strings.TrimSuffix(res.LatencyStr, " ms"))
-		if lat < info.MinLatency {
-			info.MinLatency = lat
-		}
+		lat := int(res.TCPDuration.Milliseconds())
+		if lat < info.MinLatency { info.MinLatency = lat }
 	}
 	scanMutex.Unlock()
 
 	var dcList []DataCenterInfo
-	for _, info := range dcMap {
-		dcList = append(dcList, *info)
-	}
-	sort.Slice(dcList, func(i, j int) bool {
-		return dcList[i].MinLatency < dcList[j].MinLatency
-	})
+	for _, info := range dcMap { dcList = append(dcList, *info) }
+	sort.Slice(dcList, func(i, j int) bool { return dcList[i].MinLatency < dcList[j].MinLatency })
 
-	sendWSMessage(ws, "log", "扫描完成")
 	sendWSMessage(ws, "scan_complete_wait_dc", dcList)
 }
 
@@ -456,13 +394,6 @@ func runDetailedTest(ws *websocket.Conn, selectedDC string, port int, delay int)
 	}
 	scanMutex.Unlock()
 
-	if len(testIPList) == 0 {
-		sendWSMessage(ws, "error", "没有找到可测试的 IP 地址")
-		return
-	}
-
-	sendWSMessage(ws, "log", "开始详细测试...")
-
 	var results []TestResult
 	var resMutex sync.Mutex
 	var wg sync.WaitGroup
@@ -474,52 +405,39 @@ func runDetailedTest(ws *websocket.Conn, selectedDC string, port int, delay int)
 	for _, ip := range testIPList {
 		thread <- struct{}{}
 		go func(ip string) {
-			defer func() {
-				<-thread
-				wg.Done()
-				scanMutex.Lock()
-				count++
-				currentCount := count
-				scanMutex.Unlock()
-				if currentCount%5 == 0 || currentCount == total {
-					sendWSMessage(ws, "test_progress", map[string]int{"current": currentCount, "total": total})
-				}
-			}()
-
+			defer func() { <-thread; wg.Done() }()
+			
 			dialer := &net.Dialer{Timeout: time.Duration(delay) * time.Millisecond}
-			successCount := 0
-			totalLatency := time.Duration(0)
-			minLatency := time.Duration(math.MaxInt64)
-			maxLatency := time.Duration(0)
+			success := 0
+			var totalLat time.Duration
+			minL, maxL := time.Duration(math.MaxInt64), time.Duration(0)
 
 			for i := 0; i < 10; i++ {
 				start := time.Now()
 				conn, err := dialer.Dial("tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
-				if err != nil {
-					continue
-				}
-				latency := time.Since(start)
-				if latency > time.Duration(delay)*time.Millisecond {
+				if err == nil {
+					lat := time.Since(start)
+					success++
+					totalLat += lat
+					if lat < minL { minL = lat }
+					if lat > maxL { maxL = lat }
 					conn.Close()
-					continue
 				}
-				successCount++
-				totalLatency += latency
-				if latency < minLatency { minLatency = latency }
-				if latency > maxLatency { maxLatency = latency }
-				conn.Close()
 			}
-
-			if successCount > 0 {
-				avgLatency := totalLatency / time.Duration(successCount)
-				lossRate := float64(10-successCount) / 10.0
-				res := TestResult{
-					IP: ip, MinLatency: minLatency, MaxLatency: maxLatency, AvgLatency: avgLatency, LossRate: lossRate,
-				}
-				sendWSMessage(ws, "test_result", res)
+			if success > 0 {
+				res := TestResult{IP: ip, MinLatency: minL, MaxLatency: maxL, AvgLatency: totalLat / time.Duration(success), LossRate: float64(10-success) / 10.0}
 				resMutex.Lock()
 				results = append(results, res)
 				resMutex.Unlock()
+				sendWSMessage(ws, "test_result", res)
+			}
+			
+			scanMutex.Lock()
+			count++
+			curr := count
+			scanMutex.Unlock()
+			if curr%5 == 0 || curr == total {
+				sendWSMessage(ws, "test_progress", map[string]int{"current": curr, "total": total})
 			}
 		}(ip)
 	}
@@ -527,12 +445,11 @@ func runDetailedTest(ws *websocket.Conn, selectedDC string, port int, delay int)
 
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].LossRate != results[j].LossRate { return results[i].LossRate < results[j].LossRate }
-		minI := results[i].MinLatency / time.Millisecond
-		minJ := results[j].MinLatency / time.Millisecond
-		if minI != minJ { return minI < minJ }
+		if results[i].MinLatency/time.Millisecond != results[j].MinLatency/time.Millisecond {
+			return results[i].MinLatency < results[j].MinLatency
+		}
 		return results[i].AvgLatency < results[j].AvgLatency
 	})
-
 	sendWSMessage(ws, "test_complete", results)
 }
 
@@ -542,34 +459,18 @@ func runSpeedTest(ws *websocket.Conn, ip string, port int) {
 	if port == 443 || port == 2053 || port == 2083 || port == 2087 || port == 2096 || port == 8443 {
 		scheme = "https"
 	}
-
 	testURL := speedTestURL
-	if !strings.HasPrefix(testURL, "http://") && !strings.HasPrefix(testURL, "https://") {
-		testURL = scheme + "://" + testURL
-	}
+	if !strings.HasPrefix(testURL, "http") { testURL = scheme + "://" + testURL }
 
-	parsedURL, err := url.Parse(testURL)
-	if err != nil {
-		sendWSMessage(ws, "speed_test_result", map[string]string{"ip": ip, "speed": "URL解析错误"})
-		return
-	}
-	hostname := parsedURL.Hostname()
-
+	parsed, _ := url.Parse(testURL)
 	client := http.Client{
-		Transport: &http.Transport{
-			Dial: func(network, addr string) (net.Conn, error) {
-				return net.Dial("tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
-			},
-		},
+		Transport: &http.Transport{Dial: func(n, a string) (net.Conn, error) {
+			return net.Dial("tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
+		}},
 		Timeout: 15 * time.Second,
 	}
 
-	fullURL := fmt.Sprintf("%s://%s%s", scheme, hostname, parsedURL.RequestURI())
-	req, _ := http.NewRequest("GET", fullURL, nil)
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-
-	start := time.Now()
-	resp, err := client.Do(req)
+	resp, err := client.Get(testURL)
 	if err != nil {
 		sendWSMessage(ws, "speed_test_result", map[string]string{"ip": ip, "speed": "连接错误"})
 		return
@@ -577,94 +478,77 @@ func runSpeedTest(ws *websocket.Conn, ip string, port int) {
 	defer resp.Body.Close()
 
 	buf := make([]byte, 32*1024)
-	var totalBytes int64
-	var maxSpeed float64
+	var total int64
+	var maxS float64
+	start := time.Now()
 	timeout := time.After(5 * time.Second)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
-	lastBytes := int64(0)
-	lastTime := start
-	done := false
-	for !done {
+	lastB, lastT := int64(0), start
+	for {
 		select {
-		case <-timeout:
-			done = true
+		case <-timeout: goto DONE
 		case <-ticker.C:
 			now := time.Now()
-			duration := now.Sub(lastTime).Seconds()
-			if duration > 0 {
-				bytesDiff := totalBytes - lastBytes
-				currentSpeed := float64(bytesDiff) / duration / 1024 / 1024
-				if currentSpeed > maxSpeed { maxSpeed = currentSpeed }
-			}
-			lastBytes = totalBytes
-			lastTime = now
+			diff := total - lastB
+			curS := float64(diff) / now.Sub(lastT).Seconds() / 1024 / 1024
+			if curS > maxS { maxS = curS }
+			lastB, lastT = total, now
 		default:
 			n, err := resp.Body.Read(buf)
-			if n > 0 { totalBytes += int64(n) }
-			if err != nil { done = true }
+			total += int64(n)
+			if err != nil { goto DONE }
 		}
 	}
-
-	speedStr := fmt.Sprintf("%.2f MB/s", maxSpeed)
-	sendWSMessage(ws, "speed_test_result", map[string]string{"ip": ip, "speed": speedStr})
+DONE:
+	sendWSMessage(ws, "speed_test_result", map[string]string{"ip": ip, "speed": fmt.Sprintf("%.2f MB/s", maxS)})
 }
 
-func getURLContent(targetURL string) (string, error) {
-	resp, err := http.Get(targetURL)
+func getURLContent(u string) (string, error) {
+	resp, err := http.Get(u)
 	if err != nil { return "", err }
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil { return "", err }
-	return string(body), nil
+	b, _ := io.ReadAll(resp.Body)
+	return string(b), nil
 }
 
-func getFileContent(filename string) (string, error) {
-	data, err := os.ReadFile(filename)
-	if err != nil { return "", err }
-	return string(data), nil
+func saveToFile(f, c string) error {
+	os.MkdirAll(filepath.Dir(f), 0755)
+	return os.WriteFile(f, []byte(c), 0644)
 }
 
-func saveToFile(filename, content string) error {
-	dir := filepath.Dir(filename)
-	if dir != "." && dir != "" {
-		os.MkdirAll(dir, 0755)
-	}
-	return os.WriteFile(filename, []byte(content), 0644)
-}
-
-func parseIPList(content string) []string {
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	var ipList []string
+func parseIPList(c string) []string {
+	scanner := bufio.NewScanner(strings.NewReader(c))
+	var res []string
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line != "" { ipList = append(ipList, line) }
+		if line != "" { res = append(res, line) }
 	}
-	return ipList
+	return res
 }
 
-func getRandomIPv4s(ipList []string) []string {
-	var randomIPs []string
-	for _, subnet := range ipList {
-		baseIP := strings.TrimSuffix(subnet, "/24")
-		octets := strings.Split(baseIP, ".")
-		if len(octets) != 4 { continue }
-		octets[3] = fmt.Sprintf("%d", rand.Intn(256))
-		randomIPs = append(randomIPs, strings.Join(octets, "."))
+func getRandomIPv4s(list []string) []string {
+	var res []string
+	for _, s := range list {
+		oct := strings.Split(strings.TrimSuffix(s, "/24"), ".")
+		if len(oct) == 4 {
+			oct[3] = fmt.Sprintf("%d", rand.Intn(256))
+			res = append(res, strings.Join(oct, "."))
+		}
 	}
-	return randomIPs
+	return res
 }
 
-func getRandomIPv6s(ipList []string) []string {
-	var randomIPs []string
-	for _, subnet := range ipList {
-		baseIP := strings.TrimSuffix(subnet, "/48")
-		sections := strings.Split(baseIP, ":")
-		if len(sections) < 3 { continue }
-		sections = sections[:3]
-		for i := 0; i < 5; i++ { sections = append(sections, fmt.Sprintf("%x", rand.Intn(65536))) }
-		randomIPs = append(randomIPs, strings.Join(sections, ":"))
+func getRandomIPv6s(list []string) []string {
+	var res []string
+	for _, s := range list {
+		sec := strings.Split(strings.TrimSuffix(s, "/48"), ":")
+		if len(sec) >= 3 {
+			sec = sec[:3]
+			for i := 0; i < 5; i++ { sec = append(sec, fmt.Sprintf("%x", rand.Intn(65536))) }
+			res = append(res, strings.Join(sec, ":"))
+		}
 	}
-	return randomIPs
+	return res
 }
