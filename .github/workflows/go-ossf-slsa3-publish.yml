@@ -1,7 +1,64 @@
-- name: Build APK
+name: Build Android APK
+
+on:
+  push:
+    branches: [ "main", "master" ] # 当推送到 main 或 master 分支时触发
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch: # 允许手动触发构建
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21' # 建议使用稳定的 Go 版本
+          check-latest: true
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        # gomobile 对 NDK 版本有要求，r25b 是目前较稳定的版本
         run: |
-          # 初始化 gomobile
+          sdkmanager "ndk;25.2.9519653"
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/25.2.9519653" >> $GITHUB_ENV
+
+      - name: Install Gomobile
+        run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
-          gomobile init
-          # 执行打包，确保路径 '.' 指向包含上面 main.go 的目录
+          # 获取 gomobile 的安装路径并加入 PATH
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      - name: Initialize Gomobile
+        run: gomobile init
+
+      - name: Go Mod Tidy
+        run: go mod tidy
+
+      - name: Build Android APK
+        run: |
+          # -v 显示详细日志
+          # -target=android 指定构建目标
+          # -o 指定输出文件名
+          # . 表示构建当前目录下的 main 包
           gomobile build -v -target=android -o cloudflare-test.apk .
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cloudflare-Test-APK
+          path: cloudflare-test.apk
+          if-no-files-found: error
