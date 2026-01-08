@@ -2,8 +2,8 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ "main", "master" ]
-  workflow_dispatch:
+    branches: [ "main", "master" ] # 只有推送到 main 或 master 分支才触发
+  workflow_dispatch: # 允许你在 Actions 页面手动点击按钮触发构建
 
 jobs:
   build:
@@ -17,6 +17,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
+          check-latest: true
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -28,30 +29,36 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install NDK
+        # Android 16 和现代 Gomobile 需要较新且稳定的 NDK 版本
         run: |
           sdkmanager "ndk;25.2.9519653"
-          # 确保路径被正确识别
           echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/25.2.9519653" >> $GITHUB_ENV
 
       - name: Install Gomobile
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
+          # 将 gomobile 可执行文件路径加入系统 PATH
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
       - name: Initialize Gomobile
         run: gomobile init
 
       - name: Go Mod Tidy
+        # 这一步会根据 main.go 自动下载所需的依赖包
         run: go mod tidy
 
       - name: Build Android APK
         run: |
-          # 关键修改点：添加 -androidapi 19
-          # 这告诉 gomobile 使用现代 NDK 支持的最小 API 版本
-          gomobile build -v -target=android -androidapi 33 -o cloudflare-test.apk .
+          # --androidapi 35: 解决 Android 16 的“旧版应用”警告，适配最新的安全沙盒
+          # -v: 输出详细构建过程日志，方便排错
+          # -o: 指定输出的 APK 文件名
+          # .: 构建当前根目录下的项目
+          gomobile build -v -target=android -androidapi 35 -o cloudflare-test.apk .
 
       - name: Upload APK Artifact
+        # 将生成的 APK 上传到 GitHub，方便你下载
         uses: actions/upload-artifact@v4
         with:
-          name: Cloudflare-Test-APK
+          name: Cloudflare-Test-Package
           path: cloudflare-test.apk
+          if-no-files-found: error
