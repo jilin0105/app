@@ -110,21 +110,16 @@ func main() {
 		for e := range a.Events() {
 			switch e := a.Filter(e).(type) {
 			case lifecycle.Event:
-				// 处理前后台切换逻辑（此处仅打印日志）
 				fmt.Printf("App 生命周期状态: %v\n", e.To)
 			}
 		}
 	})
 }
 
-// ----------------------- 以下是你原有的全部完整业务函数 -----------------------
+// ----------------------- 核心函数 -----------------------
 
 func SetSpeedTestURL(u string) {
 	speedTestURL = u
-}
-
-func SetDataDir(dir string) {
-	dataDir = dir
 }
 
 func dataPath(name string) string {
@@ -159,7 +154,6 @@ func StartServer(port int, url string) error {
 func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		fmt.Println("WebSocket 升级失败:", err)
 		return
 	}
 	defer ws.Close()
@@ -224,26 +218,26 @@ func sendWSMessage(ws *websocket.Conn, msgType string, data interface{}) {
 		"type": msgType,
 		"data": data,
 	}
-	ws.WriteJSON(msg)
+	_ = ws.WriteJSON(msg)
 }
 
 func initLocations() {
 	filename := dataPath("locations.json")
-	url := "https://www.baipiao.eu.org/cloudflare/locations"
-	var locations []location
+	apiURL := "https://www.baipiao.eu.org/cloudflare/locations"
 	var body []byte
 	var err error
 
 	if _, err = os.Stat(filename); os.IsNotExist(err) {
-		resp, err := http.Get(url)
+		resp, err := http.Get(apiURL)
 		if err != nil { return }
 		defer resp.Body.Close()
 		body, _ = io.ReadAll(resp.Body)
-		saveToFile(filename, string(body))
+		_ = saveToFile(filename, string(body))
 	} else {
 		body, _ = os.ReadFile(filename)
 	}
 
+	var locations []location
 	if err := json.Unmarshal(body, &locations); err != nil { return }
 	locationMap = make(map[string]location)
 	for _, loc := range locations {
@@ -281,7 +275,7 @@ func runUnifiedTask(ws *websocket.Conn, ipType int, scanMaxThreads int) {
 	var content string
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
 		content, _ = getURLContent(apiURL)
-		saveToFile(filename, content)
+		_ = saveToFile(filename, content)
 	} else {
 		data, _ := os.ReadFile(filename)
 		content = string(data)
@@ -462,7 +456,12 @@ func runSpeedTest(ws *websocket.Conn, ip string, port int) {
 	testURL := speedTestURL
 	if !strings.HasPrefix(testURL, "http") { testURL = scheme + "://" + testURL }
 
-	parsed, _ := url.Parse(testURL)
+	parsed, err := url.Parse(testURL)
+	if err != nil {
+		sendWSMessage(ws, "speed_test_result", map[string]string{"ip": ip, "speed": "URL解析错误"})
+		return
+	}
+
 	client := http.Client{
 		Transport: &http.Transport{Dial: func(n, a string) (net.Conn, error) {
 			return net.Dial("tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
@@ -470,7 +469,8 @@ func runSpeedTest(ws *websocket.Conn, ip string, port int) {
 		Timeout: 15 * time.Second,
 	}
 
-	resp, err := client.Get(testURL)
+	// 这里使用了修复后的变量 parsed
+	resp, err := client.Get(parsed.String())
 	if err != nil {
 		sendWSMessage(ws, "speed_test_result", map[string]string{"ip": ip, "speed": "连接错误"})
 		return
@@ -492,8 +492,11 @@ func runSpeedTest(ws *websocket.Conn, ip string, port int) {
 		case <-ticker.C:
 			now := time.Now()
 			diff := total - lastB
-			curS := float64(diff) / now.Sub(lastT).Seconds() / 1024 / 1024
-			if curS > maxS { maxS = curS }
+			duration := now.Sub(lastT).Seconds()
+			if duration > 0 {
+				curS := float64(diff) / duration / 1024 / 1024
+				if curS > maxS { maxS = curS }
+			}
 			lastB, lastT = total, now
 		default:
 			n, err := resp.Body.Read(buf)
@@ -514,7 +517,7 @@ func getURLContent(u string) (string, error) {
 }
 
 func saveToFile(f, c string) error {
-	os.MkdirAll(filepath.Dir(f), 0755)
+	_ = os.MkdirAll(filepath.Dir(f), 0755)
 	return os.WriteFile(f, []byte(c), 0644)
 }
 
