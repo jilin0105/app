@@ -48,7 +48,7 @@ jobs:
         run: |
           # 关键修改点：添加 -androidapi 19
           # 这告诉 gomobile 使用现代 NDK 支持的最小 API 版本
-          gomobile build -v -target=android -androidapi 19 -o cloudflare-test.apk .
+          gomobile build -v -target=android -androidapi 33 -o cloudflare-test.apk .
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
