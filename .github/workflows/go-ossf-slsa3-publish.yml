@@ -1,44 +1,7 @@
-name: Go Android CI
-
-on:
-  push:
-    branches: [ main ]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4  # 更新到 v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5  # 更新到 v5
-        with:
-          go-version: '1.21'
-
-      - name: Set up Java
-        uses: actions/setup-java@v4  # 更新到 v4
-        with:
-          distribution: 'zulu'
-          java-version: '17'
-
-      - name: Install Gomobile
+- name: Build APK
         run: |
+          # 初始化 gomobile
           go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
-          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
-          # 这一步会自动配置云端的 SDK/NDK
-          $(go env GOPATH)/bin/gomobile init
-
-      - name: Build APK
-        run: |
-          go mod tidy
-          # 打包命令
-          $(go env GOPATH)/bin/gomobile build -target=android -o myapp.apk .
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4  # 核心修复：更新到 v4
-        with:
-          name: android-apk
-          path: myapp.apk
+          gomobile init
+          # 执行打包，确保路径 '.' 指向包含上面 main.go 的目录
+          gomobile build -v -target=android -o cloudflare-test.apk .
