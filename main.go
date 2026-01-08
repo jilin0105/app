@@ -6,16 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -86,7 +81,7 @@ var (
 	dataDir       string
 )
 
-// ----------------------- 入口函数 (针对小米 14 / Android 16 优化) -----------------------
+// ----------------------- 入口函数 -----------------------
 
 func main() {
 	app.Main(func(a app.App) {
@@ -94,31 +89,24 @@ func main() {
 		for e := range a.Events() {
 			switch e := a.Filter(e).(type) {
 			case lifecycle.Event:
-				// 仅在应用获得焦点（Focused）时启动，确保系统环境已准备好
 				if e.Crosses(lifecycle.StageFocused) == lifecycle.CrossOn {
 					once.Do(func() {
 						go func() {
-							// 延迟 1 秒，避开 Android 16 启动保护期
 							time.Sleep(1 * time.Second)
 
-							// 路径安全初始化
 							fDir := os.Getenv("FILESDIR")
 							if fDir != "" {
 								dataDir = fDir
 							} else {
-								// 针对 org.golang.todo.cfdata 的硬编码路径兜底
 								dataDir = "/data/user/0/org.golang.todo.cfdata/files"
 							}
 							
-							// 尝试创建目录，但不捕获错误（失败则在内存运行）
 							_ = os.MkdirAll(dataDir, 0755)
 
 							port := 8080
 							defaultURL := "https://speed.cloudflare.com/__down?bytes=100000000"
 							
-							// 启动 Web 服务
 							if err := StartServer(port, defaultURL); err != nil {
-								// 端口占用则随机选择
 								_ = StartServer(0, defaultURL)
 							}
 						}()
@@ -129,7 +117,7 @@ func main() {
 	})
 }
 
-// ----------------------- 核心业务函数 -----------------------
+// ----------------------- 核心业务 -----------------------
 
 func SetSpeedTestURL(u string) {
 	speedTestURL = u
@@ -148,7 +136,6 @@ func StartServer(port int, url string) error {
 
 	initLocations()
 
-	// 路由设置
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		data, err := staticFiles.ReadFile("index.html")
 		if err != nil {
@@ -162,8 +149,7 @@ func StartServer(port int, url string) error {
 	http.HandleFunc("/ws", handleWebSocket)
 
 	addr := fmt.Sprintf(":%d", listenPort)
-	server := &http.Server{Addr: addr}
-	return server.ListenAndServe()
+	return http.ListenAndServe(addr, nil)
 }
 
 func handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -231,7 +217,6 @@ func initLocations() {
 	apiURL := "https://www.baipiao.eu.org/cloudflare/locations"
 	var body []byte
 
-	// 容错读取：优先本地，失败则下载
 	if _, err := os.Stat(filename); err == nil {
 		body, _ = os.ReadFile(filename)
 	}
@@ -287,8 +272,6 @@ func runUnifiedTask(ws *websocket.Conn, ipType int, scanMaxThreads int) {
 	}
 
 	ipList := parseIPList(content)
-	if ipType == 6 { ipList = getRandomIPv6s(ipList) } else { ipList = getRandomIPv4s(ipList) }
-
 	scanMutex.Lock()
 	scanResults = []ScanResult{}
 	scanMutex.Unlock()
@@ -387,17 +370,4 @@ func parseIPList(c string) []string {
 		if line := strings.TrimSpace(scanner.Text()); line != "" { res = append(res, line) }
 	}
 	return res
-}
-
-func getRandomIPv4s(list []string) []string {
-	var res []string
-	for i, s := range list {
-		if i > 100 { break }
-		res = append(res, s)
-	}
-	return res
-}
-
-func getRandomIPv6s(list []string) []string {
-	return list
 }
